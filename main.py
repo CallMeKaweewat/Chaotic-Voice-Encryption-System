@@ -27,7 +27,7 @@ class ChaosCryptoCore:
 
     @staticmethod
     def get_initials(password, count=3):
-        # Generate stable initial conditions
+        # Generate stable initial conditions from password hash
         h = int(SHA256.new(password.encode()).hexdigest(), 16)
         vals = []
         for i in range(count):
@@ -39,7 +39,10 @@ class ChaosCryptoCore:
 
     @staticmethod
     def safe_byte(val, scale=1.0, offset=0.0):
-        """[CRITICAL] ป้องกัน Error: float infinity to integer"""
+        """
+        [CRITICAL FIX] ป้องกัน Error: float infinity to integer
+        ถ้าค่าเป็น Infinity หรือ NaN ให้คืนค่า 0 ทันที เพื่อไม่ให้โปรแกรมเด้ง
+        """
         if not math.isfinite(val): return 0
         try:
             return int((val + offset) * scale) % 256
@@ -59,7 +62,7 @@ class ChaosCryptoCore:
             y = b * x
             x = new_x
 
-            # Anti-Divergence Check
+            # Anti-Divergence Check (ถ้าค่าพุ่งเกิน 100 ให้ Reset)
             if not math.isfinite(x) or abs(x) > 100.0:
                 x, y = 0.1, 0.1
 
@@ -148,7 +151,7 @@ class ChaosCryptoCore:
 class UltimateCryptoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Ultimate Audio Crypto Suite (Operation & Benchmark)")
+        self.title("Ultimate Audio Crypto Suite v6.0 (Selective + Benchmark)")
         self.geometry("1100x850")
 
         # Tab View
@@ -191,14 +194,22 @@ class UltimateCryptoApp(ctk.CTk):
         # Buttons
         btn_box = ctk.CTkFrame(frame, fg_color="transparent")
         btn_box.pack(pady=20)
-        ctk.CTkButton(btn_box, text="LOCK (Encrypt)", fg_color="#c0392b", width=140,
-                      command=lambda: self.run_operation("encrypt")).pack(side="left", padx=10)
-        ctk.CTkButton(btn_box, text="UNLOCK (Decrypt)", fg_color="#27ae60", width=140,
-                      command=lambda: self.run_operation("decrypt")).pack(side="left", padx=10)
+
+        # Full Encryption
+        ctk.CTkButton(btn_box, text="🔒 FULL LOCK", fg_color="#c0392b", width=120,
+                      command=lambda: self.run_full_process("encrypt")).pack(side="left", padx=5)
+
+        # Fast (Selective) Encryption [NEW]
+        ctk.CTkButton(btn_box, text="⚡ FAST LOCK (MSB)", fg_color="#d35400", hover_color="#e67e22", width=140,
+                      command=lambda: self.run_selective_process("encrypt")).pack(side="left", padx=5)
+
+        # Decrypt
+        ctk.CTkButton(btn_box, text="🔓 UNLOCK", fg_color="#27ae60", width=120,
+                      command=lambda: self.run_full_process("decrypt")).pack(side="left", padx=5)
 
         # Log Area
         ctk.CTkLabel(frame, text="Detailed Log Report:", anchor="w").pack(fill="x", padx=20)
-        self.op_log = ctk.CTkTextbox(frame, height=200, font=("Consolas", 12))
+        self.op_log = ctk.CTkTextbox(frame, height=250, font=("Consolas", 12))
         self.op_log.pack(pady=5, padx=20, fill="both", expand=True)
 
     def browse_file(self):
@@ -207,10 +218,11 @@ class UltimateCryptoApp(ctk.CTk):
             self.file_path.set(path)
             self.lbl_file.configure(text=os.path.basename(path))
 
-    def run_operation(self, mode):
-        threading.Thread(target=self.process_operation_thread, args=(mode,), daemon=True).start()
+    # --- Full Process Logic ---
+    def run_full_process(self, mode):
+        threading.Thread(target=self.process_full_thread, args=(mode,), daemon=True).start()
 
-    def process_operation_thread(self, mode):
+    def process_full_thread(self, mode):
         path = self.file_path.get()
         pwd = self.entry_pass.get()
         algo_name = self.algo_var.get()
@@ -221,10 +233,7 @@ class UltimateCryptoApp(ctk.CTk):
 
         try:
             start_t = time.time()
-            file_size = os.path.getsize(path) / (1024 * 1024)  # MB
-
-            self.log_op(f"--- Starting {mode.upper()} ---")
-            self.log_op(f"Reading: {os.path.basename(path)}")
+            self.log_op(f"--- Starting FULL {mode.upper()} ---")
 
             # Read
             data, sr = sf.read(path, dtype='int16')
@@ -234,39 +243,91 @@ class UltimateCryptoApp(ctk.CTk):
 
             # KeyStream
             ks = self.get_keystream(algo_name, pwd, n_bytes)
+            if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
 
             # XOR
-            if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
             processed_bytes = np.bitwise_xor(np.frombuffer(byte_data, dtype=np.uint8), ks)
+            final_audio = np.frombuffer(processed_bytes.tobytes(), dtype='int16').reshape(data.shape)
 
             # Save
-            final_audio = np.frombuffer(processed_bytes.tobytes(), dtype='int16').reshape(data.shape)
             tag = algo_name.split()[0]
             suffix = f"_{tag}_NOISE.wav" if mode == "encrypt" else f"_{tag}_RESTORED.wav"
             out_path = os.path.splitext(path)[0] + suffix
             sf.write(out_path, final_audio, sr)
 
-            duration = time.time() - start_t
-
-            # Detailed Report
-            report = f"""
---------------------------------------------------
-[OPERATION SUMMARY]
---------------------------------------------------
-File Name     : {os.path.basename(path)}
-File Size     : {file_size:.4f} MB
-Algorithm     : {algo_name}
-Operation     : {mode.upper()}
-Time Taken    : {duration:.4f} seconds
-Speed         : {file_size / duration:.2f} MB/s
-Output Path   : {os.path.basename(out_path)}
---------------------------------------------------
-            """
-            self.log_op(report)
-            messagebox.showinfo("Success", f"{mode.upper()} Complete!")
+            self.generate_report(path, mode, algo_name, start_t, "Full Encryption")
 
         except Exception as e:
             self.log_op(f"Error: {str(e)}")
+
+    # --- Selective (Fast) Process Logic [NEW] ---
+    def run_selective_process(self, mode):
+        threading.Thread(target=self.process_selective_thread, args=(mode,), daemon=True).start()
+
+    def process_selective_thread(self, mode):
+        path = self.file_path.get()
+        pwd = self.entry_pass.get()
+        algo_name = self.algo_var.get()
+
+        if not path or not pwd:
+            self.log_op("Error: Missing file or password.")
+            return
+
+        try:
+            start_t = time.time()
+            self.log_op(f"--- Starting SELECTIVE {mode.upper()} (MSB Only) ---")
+
+            # 1. Read File
+            data, sr = sf.read(path, dtype='int16')
+            flat_data = data.flatten()
+
+            # 2. Split Critical Parts (MSB vs LSB)
+            msb_part = (flat_data >> 8).astype(np.uint8)
+            lsb_part = (flat_data & 0xFF).astype(np.uint8)
+
+            # 3. Encrypt ONLY MSB (Half the size = 2x Speed)
+            n_bytes = len(msb_part)
+            ks = self.get_keystream(algo_name, pwd, n_bytes)
+            if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
+
+            processed_msb = np.bitwise_xor(msb_part, ks)
+
+            # 4. Reconstruct Audio
+            # (Encrypted MSB << 8) | Original LSB
+            processed_msb_16 = processed_msb.astype(np.int16) << 8
+            final_flat = processed_msb_16 | lsb_part.astype(np.int16)
+            final_audio = final_flat.reshape(data.shape)
+
+            # 5. Save
+            tag = algo_name.split()[0]
+            suffix = f"_{tag}_PARTIAL.wav"  # Mark as Partial
+            out_path = os.path.splitext(path)[0] + suffix
+            sf.write(out_path, final_audio, sr)
+
+            self.generate_report(path, mode, algo_name, start_t, "Selective (MSB Only)")
+
+        except Exception as e:
+            self.log_op(f"Error: {str(e)}")
+
+    def generate_report(self, path, mode, algo, start_time, strategy):
+        duration = time.time() - start_time
+        file_size = os.path.getsize(path) / (1024 * 1024)
+        throughput = file_size / duration if duration > 0 else 0
+
+        report = f"""
+--------------------------------------------------
+[SUMMARY REPORT]
+--------------------------------------------------
+File Name     : {os.path.basename(path)}
+Strategy      : {strategy}
+Algorithm     : {algo}
+File Size     : {file_size:.4f} MB
+Time Taken    : {duration:.4f} seconds
+Throughput    : {throughput:.2f} MB/s
+--------------------------------------------------
+        """
+        self.log_op(report)
+        messagebox.showinfo("Success", f"{mode.upper()} Complete!\nMode: {strategy}")
 
     def log_op(self, text):
         self.op_log.insert("end", text + "\n")
@@ -276,7 +337,6 @@ Output Path   : {os.path.basename(out_path)}
     # TAB 2: RESEARCH/BENCHMARK MODE
     # =========================================================================
     def setup_benchmark_tab(self):
-        # Left Panel: Controls
         left = ctk.CTkFrame(self.tab_bench, width=280)
         left.pack(side="left", fill="y", padx=10, pady=10)
 
@@ -292,7 +352,6 @@ Output Path   : {os.path.basename(out_path)}
         self.bench_log = ctk.CTkTextbox(left, font=("Consolas", 11))
         self.bench_log.pack(pady=10, padx=5, fill="both", expand=True)
 
-        # Right Panel: Graphs
         self.right_panel = ctk.CTkFrame(self.tab_bench)
         self.right_panel.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
@@ -322,7 +381,6 @@ Output Path   : {os.path.basename(out_path)}
             for name, func in algos.items():
                 self.bench_log.insert("end", f"> Testing {name}...\n")
 
-                # Time
                 start = time.time()
                 ks = func(pwd, size_bytes)
                 if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
@@ -330,22 +388,19 @@ Output Path   : {os.path.basename(out_path)}
                 dur = time.time() - start
                 if dur == 0: dur = 0.001
 
-                # Metrics
                 speed = mb / dur
                 entropy = ChaosCryptoCore.calculate_entropy(enc)
                 corr = ChaosCryptoCore.calculate_correlation(dummy, enc)
 
                 results.append({"Algo": name, "Speed": speed, "Entropy": entropy, "Corr": corr})
 
-            # Show Table
             df = pd.DataFrame(results)
             table_str = df.to_string(formatters={
                 'Speed': '{:,.2f}'.format, 'Entropy': '{:,.4f}'.format, 'Corr': '{:,.4f}'.format
             })
-            self.bench_log.insert("end", "\n" + "=" * 30 + "\nFINAL RESULTS:\n" + "=" * 30 + "\n")
+            self.bench_log.insert("end", "\n" + "=" * 30 + "\nRESULTS:\n" + "=" * 30 + "\n")
             self.bench_log.insert("end", table_str)
 
-            # Plot
             self.after(0, lambda: self.plot_graphs(df))
 
         except Exception as e:
@@ -357,18 +412,16 @@ Output Path   : {os.path.basename(out_path)}
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 8))
         fig.patch.set_facecolor('#2b2b2b')
 
-        # Speed Chart
         ax1.barh(df['Algo'], df['Speed'], color='#3498db')
         ax1.set_title('Encryption Speed (MB/s)', color='white')
-        ax1.tick_params(colors='white')
+        ax1.tick_params(colors='white', labelcolor='white')
         ax1.set_facecolor('#2b2b2b')
 
-        # Entropy Chart
         ax2.barh(df['Algo'], df['Entropy'], color='#e74c3c')
         ax2.set_xlim(7.90, 8.01)
         ax2.axvline(8.0, color='lime', linestyle='--')
         ax2.set_title('Entropy (Ideal = 8.0)', color='white')
-        ax2.tick_params(colors='white')
+        ax2.tick_params(colors='white', labelcolor='white')
         ax2.set_facecolor('#2b2b2b')
 
         plt.tight_layout()
