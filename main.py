@@ -110,25 +110,30 @@ class ChaosCryptoCore:
 
     @staticmethod
     def calculate_entropy(data):
+        """
+        [FIXED] แก้ไข ValueError: object too deep โดยการ flatten ข้อมูลก่อน
+        """
         if len(data) == 0: return 0.0
+
+        # 1. แปลงข้อมูลเป็น uint8 (byte) เพื่อให้คำนวณ Entropy ได้ถูกต้อง
+        if data.dtype != np.uint8:
+            data = data.view(np.uint8)
+
+        # 2. [สำคัญ] Flatten ข้อมูลให้เป็น 1D Array (แก้ปัญหา Stereo/Multi-channel)
+        data = data.flatten()
+
+        # 3. คำนวณความถี่
         counts = np.bincount(data, minlength=256)
         probs = counts / len(data)
         probs = probs[probs > 0]
         return -np.sum(probs * np.log2(probs))
 
-    @staticmethod
-    def calculate_correlation(original, encrypted):
-        limit = min(len(original), 5000)
-        if limit == 0: return 0.0
-        if np.std(original[:limit]) == 0 or np.std(encrypted[:limit]) == 0: return 0.0
-        return np.corrcoef(original[:limit], encrypted[:limit])[0, 1]
-
 
 class UltimateCryptoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Audio Crypto Suite v7.0 (Waveform Visualization)")
-        self.geometry("1200x900")
+        self.title("Audio Crypto Suite v8.1 (Fixed Stereo Bug)")
+        self.geometry("1250x900")
 
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
@@ -139,23 +144,18 @@ class UltimateCryptoApp(ctk.CTk):
         self.setup_operation_tab()
         self.setup_benchmark_tab()
 
-    # =========================================================================
-    # TAB 1: OPERATION & VISUALIZATION
-    # =========================================================================
     def setup_operation_tab(self):
-        # --- Left Panel: Controls (Width 350) ---
-        ctrl_frame = ctk.CTkFrame(self.tab_op, width=350)
+        # --- Left Panel ---
+        ctrl_frame = ctk.CTkFrame(self.tab_op, width=380)
         ctrl_frame.pack(side="left", fill="y", padx=10, pady=10)
 
         ctk.CTkLabel(ctrl_frame, text="CONTROL PANEL", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
 
-        # File
         self.file_path = tk.StringVar()
         ctk.CTkButton(ctrl_frame, text="📂 Select Audio File", command=self.browse_file).pack(pady=5, padx=10, fill="x")
         self.lbl_file = ctk.CTkLabel(ctrl_frame, text="No file selected", text_color="gray", wraplength=300)
         self.lbl_file.pack(pady=5)
 
-        # Settings
         ctk.CTkLabel(ctrl_frame, text="Algorithm:").pack(anchor="w", padx=10)
         self.algo_var = ctk.StringVar(value="Hénon Map (2D)")
         algos = ["Hénon Map (2D)", "Logistic Map (1D)", "Lorenz System (3D)", "Chen System (3D)", "ChaCha20", "AES-CTR"]
@@ -165,8 +165,7 @@ class UltimateCryptoApp(ctk.CTk):
         self.entry_pass = ctk.CTkEntry(ctrl_frame, show="*")
         self.entry_pass.pack(fill="x", padx=10, pady=5)
 
-        # Buttons
-        ctk.CTkLabel(ctrl_frame, text="Actions:").pack(anchor="w", padx=10, pady=(20, 5))
+        ctk.CTkLabel(ctrl_frame, text="Actions:").pack(anchor="w", padx=10, pady=(15, 5))
         ctk.CTkButton(ctrl_frame, text="🔒 FULL ENCRYPT", fg_color="#c0392b", hover_color="#922b21",
                       command=lambda: self.run_process("encrypt", "full")).pack(fill="x", padx=10, pady=5)
         ctk.CTkButton(ctrl_frame, text="⚡ FAST ENCRYPT (MSB)", fg_color="#d35400", hover_color="#a04000",
@@ -174,19 +173,17 @@ class UltimateCryptoApp(ctk.CTk):
         ctk.CTkButton(ctrl_frame, text="🔓 DECRYPT", fg_color="#27ae60", hover_color="#1e8449",
                       command=lambda: self.run_process("decrypt", "full")).pack(fill="x", padx=10, pady=5)
 
-        # Log
-        ctk.CTkLabel(ctrl_frame, text="Status Log:").pack(anchor="w", padx=10, pady=(20, 5))
-        self.op_log = ctk.CTkTextbox(ctrl_frame, font=("Consolas", 11))
+        ctk.CTkLabel(ctrl_frame, text="Detailed Status Log:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10,
+                                                                                                    pady=(20, 5))
+        self.op_log = ctk.CTkTextbox(ctrl_frame, font=("Consolas", 12))
         self.op_log.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # --- Right Panel: Visualization (Waveforms) ---
+        # --- Right Panel ---
         self.viz_frame = ctk.CTkFrame(self.tab_op)
         self.viz_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
         ctk.CTkLabel(self.viz_frame, text="SIGNAL COMPARISON (Waveform)",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-
-        # Placeholder for graph
         self.canvas_area = ctk.CTkFrame(self.viz_frame)
         self.canvas_area.pack(fill="both", expand=True, padx=5, pady=5)
 
@@ -205,16 +202,18 @@ class UltimateCryptoApp(ctk.CTk):
         algo = self.algo_var.get()
 
         if not path or not pwd:
-            self.log_op("Error: File and Password required!")
+            self.log_to_box("❌ Error: File and Password required!")
             return
 
         try:
             start_t = time.time()
-            self.log_op(f"Starting {mode.upper()} ({strategy})...")
+            self.log_to_box(f"⏳ Starting {mode.upper()} process...")
 
             # Read File
             data, sr = sf.read(path, dtype='int16')
             flat_data = data.flatten()
+            original_size_mb = os.path.getsize(path) / (1024 * 1024)
+            audio_duration = len(data) / sr
 
             # Processing Logic
             processed_flat = None
@@ -241,72 +240,112 @@ class UltimateCryptoApp(ctk.CTk):
             out_path = os.path.splitext(path)[0] + suffix
             sf.write(out_path, final_audio, sr)
 
+            # Stats Calculation
             duration = time.time() - start_t
+            if duration == 0: duration = 0.001
+            throughput = original_size_mb / duration
 
-            # Update Log
-            self.log_op(f"Done in {duration:.2f}s | Saved: {os.path.basename(out_path)}")
+            # คำนวณ Entropy (ฟังก์ชันนี้แก้บั๊กแล้ว)
+            entropy = ChaosCryptoCore.calculate_entropy(final_audio)
 
-            # Update Graph (Run on main thread)
+            # --- Generate Detailed Report ---
+            self.generate_detailed_report(
+                filename=os.path.basename(path),
+                size_mb=original_size_mb,
+                duration_sec=audio_duration,
+                algo=algo,
+                mode=mode,
+                strategy=strategy,
+                time_taken=duration,
+                speed=throughput,
+                entropy=entropy,
+                out_file=os.path.basename(out_path)
+            )
+
+            # Update Graph
             self.after(0, lambda: self.plot_waveforms(data, final_audio, mode))
 
         except Exception as e:
-            self.log_op(f"Error: {e}")
+            self.log_to_box(f"❌ Error: {e}")
             import traceback
             traceback.print_exc()
 
+    def generate_detailed_report(self, filename, size_mb, duration_sec, algo, mode, strategy, time_taken, speed,
+                                 entropy, out_file):
+        # Determine Security Status based on Entropy
+        sec_status = "Unknown"
+        if entropy > 7.99:
+            sec_status = "✅ High (Random Noise)"
+        elif entropy > 7.5:
+            sec_status = "⚠️ Moderate"
+        else:
+            sec_status = "❌ Low (Pattern Detected)"
+
+        if mode == "decrypt": sec_status = "N/A (Restored)"
+
+        report = f"""
+{'=' * 45}
+[{mode.upper()} SUCCESS] - {strategy.upper()} MODE
+{'=' * 45}
+📂 FILE INFO
+  • Name:       {filename}
+  • Size:       {size_mb:.2f} MB
+  • Length:     {duration_sec:.2f} sec
+
+⚙️ SETTINGS
+  • Algo:       {algo}
+  • Strategy:   {strategy} ({'Fast' if strategy == 'selective' else 'Secure'})
+
+🚀 PERFORMANCE
+  • Time:       {time_taken:.4f} sec
+  • Speed:      {speed:.2f} MB/s
+
+🔒 SECURITY METRICS
+  • Entropy:    {entropy:.5f} / 8.00000
+  • Status:     {sec_status}
+{'=' * 45}
+💾 SAVED: {out_file}
+"""
+        self.log_to_box(report)
+
+    def log_to_box(self, text):
+        self.op_log.insert("end", text + "\n")
+        self.op_log.see("end")
+
     def plot_waveforms(self, original, processed, mode):
-        # Clear old graph
         for widget in self.canvas_area.winfo_children(): widget.destroy()
 
-        # Handle Stereo (Pick first channel if stereo)
+        # แก้ไขการพล็อตสำหรับไฟล์ Stereo
         y1 = original[:, 0] if original.ndim > 1 else original
         y2 = processed[:, 0] if processed.ndim > 1 else processed
 
-        # Downsample for speed (Graphing 10MB of data will freeze UI)
         step = max(1, len(y1) // 5000)
-        y1 = y1[::step]
+        y1 = y1[::step];
         y2 = y2[::step]
 
-        # Setup Plot
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 4), sharex=True)
         fig.patch.set_facecolor('#2b2b2b')
 
-        # Graph 1: Original
         ax1.plot(y1, color='#2ecc71', lw=0.8)
         ax1.set_title("Original Signal", color='white', fontsize=10)
-        ax1.set_facecolor('#212121')
-        ax1.tick_params(axis='x', colors='white')
-        ax1.tick_params(axis='y', colors='white')
-        ax1.grid(True, alpha=0.1)
+        ax1.set_facecolor('#212121');
+        ax1.tick_params(colors='white')
 
-        # Graph 2: Processed
         color = '#e74c3c' if mode == 'encrypt' else '#3498db'
         title = "Encrypted Signal (Noise)" if mode == 'encrypt' else "Restored Signal"
         ax2.plot(y2, color=color, lw=0.8)
         ax2.set_title(title, color='white', fontsize=10)
-        ax2.set_facecolor('#212121')
-        ax2.tick_params(axis='x', colors='white')
-        ax2.tick_params(axis='y', colors='white')
-        ax2.grid(True, alpha=0.1)
+        ax2.set_facecolor('#212121');
+        ax2.tick_params(colors='white')
 
         plt.tight_layout()
-
-        # Embed in CustomTkinter
         canvas = FigureCanvasTkAgg(fig, master=self.canvas_area)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-    def log_op(self, text):
-        self.op_log.insert("end", text + "\n")
-        self.op_log.see("end")
-
-    # =========================================================================
-    # TAB 2: BENCHMARK (Same as before)
-    # =========================================================================
     def setup_benchmark_tab(self):
         left = ctk.CTkFrame(self.tab_bench, width=280)
         left.pack(side="left", fill="y", padx=10, pady=10)
-
         ctk.CTkLabel(left, text="BENCHMARK LAB", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
         self.bench_size = ctk.StringVar(value="0.5")
         ctk.CTkLabel(left, text="Data Size (MB):").pack(pady=5)
@@ -316,7 +355,6 @@ class UltimateCryptoApp(ctk.CTk):
                                                                                                          padx=10)
         self.bench_log = ctk.CTkTextbox(left, font=("Consolas", 11))
         self.bench_log.pack(pady=10, padx=5, fill="both", expand=True)
-
         self.right_panel = ctk.CTkFrame(self.tab_bench)
         self.right_panel.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
