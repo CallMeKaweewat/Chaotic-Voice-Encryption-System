@@ -5,237 +5,387 @@ import numpy as np
 import soundfile as sf
 import os
 import time
+import threading
+import math
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from mpl_toolkits.mplot3d import Axes3D
+from Crypto.Cipher import ChaCha20, AES
+from Crypto.Util import Counter
+from Crypto.Hash import SHA256
 
-# --- การตั้งค่าธีม ---
+# --- Configuration ---
 ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("green")
 
 
-class ChaosAudioEngine:
-    """รวมอัลกอริทึม Chaos ทั้งแบบ 1D และ 3D"""
+class ChaosCryptoCore:
+    """
+    Core Engine: รวมอัลกอริทึม Chaos ที่มีระบบป้องกัน Crash (Overflow Protection)
+    และเครื่องมือคำนวณทางสถิติสำหรับงานวิจัย
+    """
 
     @staticmethod
-    def generate_logistic_map(seed_str, num_values, r=3.99):
-        # สร้างค่าเริ่มต้นจาก Password
-        x = (hash(seed_str) % 1000000 + 1) / 1000001.0
-        sequence = np.zeros(num_values, dtype=np.uint8)
-        for i in range(num_values):
+    def get_initials(password, count=3):
+        # Generate stable initial conditions
+        h = int(SHA256.new(password.encode()).hexdigest(), 16)
+        vals = []
+        for i in range(count):
+            val = ((h >> (i * 12)) % 100000) / 100000.0
+            # Normalize to safe range 0.1 - 0.9
+            val = 0.1 + (val * 0.8)
+            vals.append(val)
+        return vals
+
+    @staticmethod
+    def safe_byte(val, scale=1.0, offset=0.0):
+        """[CRITICAL] ป้องกัน Error: float infinity to integer"""
+        if not math.isfinite(val): return 0
+        try:
+            return int((val + offset) * scale) % 256
+        except (OverflowError, ValueError):
+            return 0
+
+    # --- Algorithms ---
+    @staticmethod
+    def henon_map(password, length):
+        """Hénon Map (2D) - Stabilized"""
+        x, y, _ = ChaosCryptoCore.get_initials(password, 3)
+        a, b = 1.4, 0.3
+        ks = np.zeros(length, dtype=np.uint8)
+
+        for i in range(length):
+            new_x = 1 - (a * (x ** 2)) + y
+            y = b * x
+            x = new_x
+
+            # Anti-Divergence Check
+            if not math.isfinite(x) or abs(x) > 100.0:
+                x, y = 0.1, 0.1
+
+            ks[i] = ChaosCryptoCore.safe_byte(x, scale=80, offset=1.5)
+        return ks
+
+    @staticmethod
+    def logistic_map(password, length):
+        """Logistic Map (1D)"""
+        x = ChaosCryptoCore.get_initials(password, 1)[0]
+        r = 3.999
+        ks = np.zeros(length, dtype=np.uint8)
+        for i in range(length):
             x = r * x * (1 - x)
-            sequence[i] = int(x * 255) % 256
-        return sequence
+            ks[i] = int(x * 255) % 256
+        return ks
 
     @staticmethod
-    def generate_lorenz_system(seed_str, num_values, return_xyz=False):
-        x = (hash(seed_str) % 10000) / 1000.0
-        y = (hash(seed_str + "y") % 10000) / 1000.0
-        z = (hash(seed_str + "z") % 10000) / 1000.0
+    def lorenz_system(password, length):
+        """Lorenz System (3D)"""
+        x, y, z = ChaosCryptoCore.get_initials(password, 3)
         sigma, rho, beta, dt = 10.0, 28.0, 8.0 / 3.0, 0.01
+        ks = np.zeros(length, dtype=np.uint8)
 
-        sequence = np.zeros(num_values, dtype=np.uint8)
-        xs, ys, zs = [], [], []
-
-        # Warm-up 1000 รอบ
-        for _ in range(1000):
-            x += sigma * (y - x) * dt
-            y += (x * (rho - z) - y) * dt
-            z += (x * y - beta * z) * dt
-
-        for i in range(num_values):
+        for i in range(length):
             dx = sigma * (y - x) * dt
             dy = (x * (rho - z) - y) * dt
             dz = (x * y - beta * z) * dt
-            x, y, z = x + dx, y + dy, z + dz
+            x += dx;
+            y += dy;
+            z += dz
 
-            sequence[i] = int(abs(x * 1000000)) % 256
-            if return_xyz:
-                xs.append(x);
-                ys.append(y);
-                zs.append(z)
+            if not math.isfinite(x): x, y, z = 0.1, 0.1, 0.1
+            ks[i] = ChaosCryptoCore.safe_byte(abs(x), scale=1000)
+        return ks
 
-        return (sequence, (xs, ys, zs)) if return_xyz else sequence
+    @staticmethod
+    def chen_system(password, length):
+        """Chen System (3D)"""
+        x, y, z = ChaosCryptoCore.get_initials(password, 3)
+        a, b, c, dt = 35.0, 3.0, 28.0, 0.005
+        ks = np.zeros(length, dtype=np.uint8)
+
+        for i in range(length):
+            dx = a * (y - x) * dt
+            dy = ((c - a) * x - x * z + c * y) * dt
+            dz = (x * y - b * z) * dt
+            x += dx;
+            y += dy;
+            z += dz
+
+            if not math.isfinite(x): x, y, z = 0.1, 0.1, 0.1
+            ks[i] = ChaosCryptoCore.safe_byte(abs(x), scale=1000)
+        return ks
+
+    @staticmethod
+    def aes_ctr(password, length):
+        key = SHA256.new(password.encode()).digest()
+        ctr = Counter.new(64, prefix=key[:8])
+        cipher = AES.new(key, AES.MODE_CTR, counter=ctr)
+        return np.frombuffer(cipher.encrypt(b'\x00' * length), dtype=np.uint8)
+
+    @staticmethod
+    def chacha20(password, length):
+        key = SHA256.new(password.encode()).digest()
+        cipher = ChaCha20.new(key=key, nonce=key[:12])
+        return np.frombuffer(cipher.encrypt(b'\x00' * length), dtype=np.uint8)
+
+    # --- Metrics ---
+    @staticmethod
+    def calculate_entropy(data):
+        if len(data) == 0: return 0.0
+        counts = np.bincount(data, minlength=256)
+        probs = counts / len(data)
+        probs = probs[probs > 0]
+        return -np.sum(probs * np.log2(probs))
+
+    @staticmethod
+    def calculate_correlation(original, encrypted):
+        limit = min(len(original), 5000)
+        if limit == 0: return 0.0
+        if np.std(original[:limit]) == 0 or np.std(encrypted[:limit]) == 0: return 0.0
+        return np.corrcoef(original[:limit], encrypted[:limit])[0, 1]
 
 
-class AudioCryptoApp(ctk.CTk):
+class UltimateCryptoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.title("Ultimate Audio Crypto Suite (Operation & Benchmark)")
+        self.geometry("1100x850")
 
-        self.title("Chaotic Voice Encryption System (CVES) Pro v3.0")
-        self.geometry("1000x850")
+        # Tab View
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.pack(padx=20, pady=10, fill="both", expand=True)
 
-        # --- Variables ---
-        self.input_file_path = tk.StringVar()
-        self.password = tk.StringVar()
-        self.algo_choice = tk.StringVar(value="Lorenz System (3D)")
+        self.tab_op = self.tabview.add("🎧 Operation Mode")
+        self.tab_bench = self.tabview.add("📊 Research/Benchmark")
 
-        # --- UI Layout ---
-        self.tabview = ctk.CTkTabview(self, width=950, height=800)
-        self.tabview.pack(pady=10, padx=20, fill="both", expand=True)
+        self.setup_operation_tab()
+        self.setup_benchmark_tab()
 
-        self.tab_main = self.tabview.add("Encryption / Decryption")
-        self.tab_security = self.tabview.add("Security Analysis")
+    # =========================================================================
+    # TAB 1: OPERATION MODE (Encrypt/Decrypt Files)
+    # =========================================================================
+    def setup_operation_tab(self):
+        frame = ctk.CTkFrame(self.tab_op)
+        frame.pack(pady=20, padx=20, fill="both", expand=True)
 
-        self.setup_main_tab()
-        self.setup_security_tab()
+        ctk.CTkLabel(frame, text="AUDIO FILE ENCRYPTION", font=ctk.CTkFont(size=22, weight="bold")).pack(pady=10)
 
-    def setup_main_tab(self):
-        # Header
-        ctk.CTkLabel(self.tab_main, text="AUDIO CHAOS VAULT",
-                     font=ctk.CTkFont(size=28, weight="bold")).pack(pady=(20, 5))
-        ctk.CTkLabel(self.tab_main, text="Secure Stream Cipher based on Non-linear Dynamics",
-                     font=ctk.CTkFont(size=14, slant="italic")).pack(pady=(0, 20))
+        # File
+        self.file_path = tk.StringVar()
+        ctk.CTkButton(frame, text="📂 Select Audio File", command=self.browse_file).pack(pady=5)
+        self.lbl_file = ctk.CTkLabel(frame, text="No file selected", text_color="gray")
+        self.lbl_file.pack(pady=5)
 
-        frame = ctk.CTkFrame(self.tab_main)
-        frame.pack(pady=10, padx=40, fill="both", expand=True)
+        # Settings
+        grid = ctk.CTkFrame(frame, fg_color="transparent")
+        grid.pack(pady=10)
+        ctk.CTkLabel(grid, text="Algorithm:").grid(row=0, column=0, padx=10)
+        self.algo_var = ctk.StringVar(value="Hénon Map (2D)")
+        algos = ["Hénon Map (2D)", "Logistic Map (1D)", "Lorenz System (3D)", "Chen System (3D)", "ChaCha20", "AES-CTR"]
+        ctk.CTkOptionMenu(grid, values=algos, variable=self.algo_var).grid(row=0, column=1, padx=10)
 
-        # File Selection
-        ctk.CTkLabel(frame, text="Select .wav File:", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 5))
-        ctk.CTkEntry(frame, textvariable=self.input_file_path, width=500).pack(pady=5)
-        ctk.CTkButton(frame, text="Browse File", command=self.browse_file).pack(pady=5)
+        ctk.CTkLabel(grid, text="Password:").grid(row=0, column=2, padx=10)
+        self.entry_pass = ctk.CTkEntry(grid, show="*", width=150)
+        self.entry_pass.grid(row=0, column=3, padx=10)
 
-        # Algorithm Selection
-        ctk.CTkLabel(frame, text="Select Algorithm:", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 5))
-        ctk.CTkOptionMenu(frame, values=["Logistic Map (1D)", "Lorenz System (3D)"],
-                          variable=self.algo_choice).pack(pady=5)
+        # Buttons
+        btn_box = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_box.pack(pady=20)
+        ctk.CTkButton(btn_box, text="LOCK (Encrypt)", fg_color="#c0392b", width=140,
+                      command=lambda: self.run_operation("encrypt")).pack(side="left", padx=10)
+        ctk.CTkButton(btn_box, text="UNLOCK (Decrypt)", fg_color="#27ae60", width=140,
+                      command=lambda: self.run_operation("decrypt")).pack(side="left", padx=10)
 
-        # Secret Key
-        ctk.CTkLabel(frame, text="Enter Secret Key:", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 5))
-        ctk.CTkEntry(frame, textvariable=self.password, show="*", width=300).pack(pady=5)
-
-        # Action Buttons
-        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.pack(pady=30)
-        ctk.CTkButton(btn_frame, text="ENCRYPT", fg_color="#c0392b", hover_color="#a93226",
-                      command=lambda: self.process_audio(True)).grid(row=0, column=0, padx=20)
-        ctk.CTkButton(btn_frame, text="DECRYPT", fg_color="#27ae60", hover_color="#1e8449",
-                      command=lambda: self.process_audio(False)).grid(row=0, column=1, padx=20)
-
-        # Visualization Toggle
-        ctk.CTkButton(frame, text="Show Chaotic Attractor Visual", fg_color="#34495e",
-                      command=self.show_visualizations).pack(pady=10)
-
-        self.status_label = ctk.CTkLabel(self.tab_main, text="Status: Ready", font=ctk.CTkFont(size=14))
-        self.status_label.pack(pady=10)
-
-    def setup_security_tab(self):
-        self.test_pass1 = ctk.StringVar(value="Key_Alpha_1")
-        self.test_pass2 = ctk.StringVar(value="Key_Alpha_2")
-
-        ctk.CTkLabel(self.tab_security, text="CHAOS SENSITIVITY TEST (BUTTERFLY EFFECT)",
-                     font=ctk.CTkFont(size=22, weight="bold")).pack(pady=20)
-
-        test_frame = ctk.CTkFrame(self.tab_security)
-        test_frame.pack(pady=10, padx=20, fill="x")
-
-        ctk.CTkLabel(test_frame, text="Key A:").grid(row=0, column=0, padx=5, pady=10)
-        ctk.CTkEntry(test_frame, textvariable=self.test_pass1).grid(row=0, column=1, padx=5)
-        ctk.CTkLabel(test_frame, text="Key B:").grid(row=0, column=2, padx=5)
-        ctk.CTkEntry(test_frame, textvariable=self.test_pass2).grid(row=0, column=3, padx=5)
-
-        ctk.CTkButton(test_frame, text="Run Security Analysis",
-                      command=self.run_security_test, fg_color="#E67E22").grid(row=0, column=4, padx=10)
-
-        self.analysis_label = ctk.CTkLabel(self.tab_security, text="Difference Score: -- %",
-                                           font=ctk.CTkFont(size=16, weight="bold"))
-        self.analysis_label.pack(pady=5)
-
-        self.viz_frame = ctk.CTkFrame(self.tab_security, fg_color="#2b2b2b")
-        self.viz_frame.pack(pady=10, padx=20, fill="both", expand=True)
-        self.sec_canvas = None
+        # Log Area
+        ctk.CTkLabel(frame, text="Detailed Log Report:", anchor="w").pack(fill="x", padx=20)
+        self.op_log = ctk.CTkTextbox(frame, height=200, font=("Consolas", 12))
+        self.op_log.pack(pady=5, padx=20, fill="both", expand=True)
 
     def browse_file(self):
-        filename = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
-        if filename:
-            self.input_file_path.set(filename)
-            self.status_label.configure(text=f"Loaded: {os.path.basename(filename)}", text_color="white")
+        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac *.ogg")])
+        if path:
+            self.file_path.set(path)
+            self.lbl_file.configure(text=os.path.basename(path))
 
-    def process_audio(self, is_encrypt):
-        path, pwd = self.input_file_path.get(), self.password.get()
+    def run_operation(self, mode):
+        threading.Thread(target=self.process_operation_thread, args=(mode,), daemon=True).start()
+
+    def process_operation_thread(self, mode):
+        path = self.file_path.get()
+        pwd = self.entry_pass.get()
+        algo_name = self.algo_var.get()
+
         if not path or not pwd:
-            messagebox.showwarning("Warning", "Please select a file and enter a secret key.")
+            self.log_op("Error: Missing file or password.")
             return
 
         try:
-            start = time.time()
+            start_t = time.time()
+            file_size = os.path.getsize(path) / (1024 * 1024)  # MB
+
+            self.log_op(f"--- Starting {mode.upper()} ---")
+            self.log_op(f"Reading: {os.path.basename(path)}")
+
+            # Read
             data, sr = sf.read(path, dtype='int16')
-            original_shape = data.shape
-            flat_data = data.flatten()
-            audio_bytes = flat_data.tobytes()
+            flat = data.flatten()
+            byte_data = flat.tobytes()
+            n_bytes = len(byte_data)
 
-            # เลือก Algorithm ตามที่ User เลือก
-            if "Lorenz" in self.algo_choice.get():
-                ks = ChaosAudioEngine.generate_lorenz_system(pwd, len(audio_bytes))
-            else:
-                ks = ChaosAudioEngine.generate_logistic_map(pwd, len(audio_bytes))
+            # KeyStream
+            ks = self.get_keystream(algo_name, pwd, n_bytes)
 
-            # XOR Encryption
-            processed_bytes = np.bitwise_xor(np.frombuffer(audio_bytes, dtype=np.uint8), ks)
+            # XOR
+            if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
+            processed_bytes = np.bitwise_xor(np.frombuffer(byte_data, dtype=np.uint8), ks)
 
-            # แปลงกลับเป็น Audio Format
-            final_data = np.frombuffer(processed_bytes.tobytes(), dtype='int16').reshape(original_shape)
+            # Save
+            final_audio = np.frombuffer(processed_bytes.tobytes(), dtype='int16').reshape(data.shape)
+            tag = algo_name.split()[0]
+            suffix = f"_{tag}_NOISE.wav" if mode == "encrypt" else f"_{tag}_RESTORED.wav"
+            out_path = os.path.splitext(path)[0] + suffix
+            sf.write(out_path, final_audio, sr)
 
-            suffix = "_encrypted.wav" if is_encrypt else "_decrypted.wav"
-            out = os.path.splitext(path)[0] + suffix
-            sf.write(out, final_data, sr)
+            duration = time.time() - start_t
 
-            self.status_label.configure(text=f"Success! Done in {time.time() - start:.4f}s", text_color="#2ecc71")
-            messagebox.showinfo("Success", f"File saved to:\n{out}")
+            # Detailed Report
+            report = f"""
+--------------------------------------------------
+[OPERATION SUMMARY]
+--------------------------------------------------
+File Name     : {os.path.basename(path)}
+File Size     : {file_size:.4f} MB
+Algorithm     : {algo_name}
+Operation     : {mode.upper()}
+Time Taken    : {duration:.4f} seconds
+Speed         : {file_size / duration:.2f} MB/s
+Output Path   : {os.path.basename(out_path)}
+--------------------------------------------------
+            """
+            self.log_op(report)
+            messagebox.showinfo("Success", f"{mode.upper()} Complete!")
+
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            self.log_op(f"Error: {str(e)}")
 
-    def show_visualizations(self):
-        pwd = self.password.get()
-        if not pwd:
-            messagebox.showwarning("Warning", "Please enter a password to see the Chaos Map.")
-            return
+    def log_op(self, text):
+        self.op_log.insert("end", text + "\n")
+        self.op_log.see("end")
 
-        if "Lorenz" in self.algo_choice.get():
-            _, (xs, ys, zs) = ChaosAudioEngine.generate_lorenz_system(pwd, 20000, return_xyz=True)
-            fig = plt.figure("Lorenz Attractor (3D Chaos)", figsize=(8, 6))
-            ax = fig.add_subplot(111, projection='3d')
-            ax.plot(xs, ys, zs, lw=0.5, color='magenta')
-            ax.set_title(f"Lorenz Attractor Path for Key: {pwd}")
-            plt.show()
-        else:
-            # สำหรับ Logistic Map แสดงผลแบบ Time Series
-            ks = ChaosAudioEngine.generate_logistic_map(pwd, 1000)
-            plt.figure("Logistic Map (1D Chaos)", figsize=(8, 4))
-            plt.plot(ks[:200], 'g-', lw=1)
-            plt.title(f"Logistic Map Sequence (First 200 pts) for Key: {pwd}")
-            plt.show()
+    # =========================================================================
+    # TAB 2: RESEARCH/BENCHMARK MODE
+    # =========================================================================
+    def setup_benchmark_tab(self):
+        # Left Panel: Controls
+        left = ctk.CTkFrame(self.tab_bench, width=280)
+        left.pack(side="left", fill="y", padx=10, pady=10)
 
-    def run_security_test(self):
-        p1, p2 = self.test_pass1.get(), self.test_pass2.get()
-        length = 1000
+        ctk.CTkLabel(left, text="BENCHMARK LAB", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
 
-        # ใช้ Lorenz เป็นมาตรฐานในการทดสอบ Sensitivity
-        k1 = ChaosAudioEngine.generate_lorenz_system(p1, length)
-        k2 = ChaosAudioEngine.generate_lorenz_system(p2, length)
+        self.bench_size = ctk.StringVar(value="0.5")
+        ctk.CTkLabel(left, text="Data Size (MB):").pack(pady=5)
+        ctk.CTkEntry(left, textvariable=self.bench_size).pack(pady=5)
 
-        diff = (np.sum(k1 != k2) / length) * 100
-        self.analysis_label.configure(text=f"Butterfly Effect Score: {diff:.2f}% Difference", text_color="#E67E22")
+        ctk.CTkButton(left, text="🚀 RUN BENCHMARK", fg_color="#d35400", hover_color="#a04000",
+                      height=40, command=self.run_benchmark).pack(pady=20, fill="x", padx=10)
 
-        if self.sec_canvas:
-            self.sec_canvas.get_tk_widget().destroy()
+        self.bench_log = ctk.CTkTextbox(left, font=("Consolas", 11))
+        self.bench_log.pack(pady=10, padx=5, fill="both", expand=True)
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 5))
-        plt.subplots_adjust(hspace=0.6)
+        # Right Panel: Graphs
+        self.right_panel = ctk.CTkFrame(self.tab_bench)
+        self.right_panel.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
-        ax1.plot(k1[:300], color='#3498db')
-        ax1.set_title(f"Sequence A (Key: '{p1}')")
-        ax1.set_ylabel("Value")
+    def run_benchmark(self):
+        threading.Thread(target=self.process_benchmark, daemon=True).start()
 
-        ax2.plot(k2[:300], color='#e74c3c')
-        ax2.set_title(f"Sequence B (Key: '{p2}')")
-        ax2.set_ylabel("Value")
+    def process_benchmark(self):
+        try:
+            mb = float(self.bench_size.get())
+            size_bytes = int(mb * 1024 * 1024)
+            pwd = "BENCH_KEY"
 
-        self.sec_canvas = FigureCanvasTkAgg(fig, master=self.viz_frame)
-        self.sec_canvas.draw()
-        self.sec_canvas.get_tk_widget().pack(fill="both", expand=True)
+            self.bench_log.delete("1.0", "end")
+            self.bench_log.insert("end", f"Benchmarking on {mb} MB...\n")
+
+            dummy = np.random.randint(0, 256, size_bytes, dtype=np.uint8)
+            algos = {
+                "Logistic": ChaosCryptoCore.logistic_map,
+                "Hénon": ChaosCryptoCore.henon_map,
+                "Lorenz": ChaosCryptoCore.lorenz_system,
+                "Chen": ChaosCryptoCore.chen_system,
+                "ChaCha20": ChaosCryptoCore.chacha20,
+                "AES-CTR": ChaosCryptoCore.aes_ctr
+            }
+
+            results = []
+            for name, func in algos.items():
+                self.bench_log.insert("end", f"> Testing {name}...\n")
+
+                # Time
+                start = time.time()
+                ks = func(pwd, size_bytes)
+                if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
+                enc = np.bitwise_xor(dummy, ks)
+                dur = time.time() - start
+                if dur == 0: dur = 0.001
+
+                # Metrics
+                speed = mb / dur
+                entropy = ChaosCryptoCore.calculate_entropy(enc)
+                corr = ChaosCryptoCore.calculate_correlation(dummy, enc)
+
+                results.append({"Algo": name, "Speed": speed, "Entropy": entropy, "Corr": corr})
+
+            # Show Table
+            df = pd.DataFrame(results)
+            table_str = df.to_string(formatters={
+                'Speed': '{:,.2f}'.format, 'Entropy': '{:,.4f}'.format, 'Corr': '{:,.4f}'.format
+            })
+            self.bench_log.insert("end", "\n" + "=" * 30 + "\nFINAL RESULTS:\n" + "=" * 30 + "\n")
+            self.bench_log.insert("end", table_str)
+
+            # Plot
+            self.after(0, lambda: self.plot_graphs(df))
+
+        except Exception as e:
+            self.bench_log.insert("end", f"\nError: {e}")
+
+    def plot_graphs(self, df):
+        for widget in self.right_panel.winfo_children(): widget.destroy()
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 8))
+        fig.patch.set_facecolor('#2b2b2b')
+
+        # Speed Chart
+        ax1.barh(df['Algo'], df['Speed'], color='#3498db')
+        ax1.set_title('Encryption Speed (MB/s)', color='white')
+        ax1.tick_params(colors='white')
+        ax1.set_facecolor('#2b2b2b')
+
+        # Entropy Chart
+        ax2.barh(df['Algo'], df['Entropy'], color='#e74c3c')
+        ax2.set_xlim(7.90, 8.01)
+        ax2.axvline(8.0, color='lime', linestyle='--')
+        ax2.set_title('Entropy (Ideal = 8.0)', color='white')
+        ax2.tick_params(colors='white')
+        ax2.set_facecolor('#2b2b2b')
+
+        plt.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.right_panel)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def get_keystream(self, name, pwd, length):
+        if "Hénon" in name: return ChaosCryptoCore.henon_map(pwd, length)
+        if "Logistic" in name: return ChaosCryptoCore.logistic_map(pwd, length)
+        if "Lorenz" in name: return ChaosCryptoCore.lorenz_system(pwd, length)
+        if "Chen" in name: return ChaosCryptoCore.chen_system(pwd, length)
+        if "ChaCha20" in name: return ChaosCryptoCore.chacha20(pwd, length)
+        if "AES" in name: return ChaosCryptoCore.aes_ctr(pwd, length)
+        return None
 
 
 if __name__ == "__main__":
-    app = AudioCryptoApp()
+    app = UltimateCryptoApp()
     app.mainloop()
