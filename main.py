@@ -20,7 +20,7 @@ ctk.set_default_color_theme("blue")
 
 
 class ChaosCryptoCore:
-    """Core Engine with Crash Protection & Math Logic"""
+    """Core Engine with High-Entropy Quantization"""
 
     @staticmethod
     def get_initials(password, count=3):
@@ -33,24 +33,50 @@ class ChaosCryptoCore:
         return vals
 
     @staticmethod
-    def safe_byte(val, scale=1.0, offset=0.0):
+    def safe_byte(val):
+        """
+        [FIXED] Deep Decimal Extraction
+        คูณด้วยค่ามหาศาลเพื่อดึงความสุ่มจากทศนิยมตำแหน่งลึกๆ
+        """
         if not math.isfinite(val): return 0
         try:
-            return int((val + offset) * scale) % 256
+            # ใช้ค่าสัมบูรณ์ * 1,000,000 แล้ว Mod 256
+            # วิธีนี้จะกระจายค่าได้ดีกว่าการคูณด้วย 80 แบบเดิมมาก
+            return int((abs(val) * 1000000)) % 256
         except (OverflowError, ValueError):
             return 0
 
     @staticmethod
     def henon_map(password, length):
+        """
+        [FIXED] Hénon Map (2D) - High Entropy Edition
+        """
         x, y, _ = ChaosCryptoCore.get_initials(password, 3)
         a, b = 1.4, 0.3
         ks = np.zeros(length, dtype=np.uint8)
+
+        # 1. Burn-in: ทิ้ง 1000 ค่าแรก เพื่อให้ระบบเข้าสู่ Strange Attractor ที่สมบูรณ์
+        for _ in range(1000):
+            new_x = 1 - (a * (x ** 2)) + y
+            y = b * x
+            x = new_x
+            if abs(x) > 100: x, y = 0.1, 0.1  # Anti-Crash
+
+        # 2. Generation Loop
         for i in range(length):
             new_x = 1 - (a * (x ** 2)) + y
             y = b * x
             x = new_x
-            if not math.isfinite(x) or abs(x) > 100.0: x, y = 0.1, 0.1
-            ks[i] = ChaosCryptoCore.safe_byte(x, scale=80, offset=1.5)
+
+            # Anti-Crash Protection
+            if not math.isfinite(x) or abs(x) > 100.0:
+                x, y = 0.1, 0.1
+
+            # [FIXED] ใช้เทคนิคผสมค่า x และ y แล้วดึงทศนิยมลึกๆ
+            # การนำ x + y ทำให้ความซับซ้อนเพิ่มขึ้น ลดโอกาสเกิด Pattern ซ้ำ
+            combined_val = x + y
+            ks[i] = ChaosCryptoCore.safe_byte(combined_val)
+
         return ks
 
     @staticmethod
@@ -58,9 +84,13 @@ class ChaosCryptoCore:
         x = ChaosCryptoCore.get_initials(password, 1)[0]
         r = 3.999
         ks = np.zeros(length, dtype=np.uint8)
+        # Burn-in
+        for _ in range(1000):
+            x = r * x * (1 - x)
+
         for i in range(length):
             x = r * x * (1 - x)
-            ks[i] = int(x * 255) % 256
+            ks[i] = int(x * 1000000) % 256  # ใช้สูตรเดียวกันเพื่อความสุ่มสูงสุด
         return ks
 
     @staticmethod
@@ -68,6 +98,15 @@ class ChaosCryptoCore:
         x, y, z = ChaosCryptoCore.get_initials(password, 3)
         sigma, rho, beta, dt = 10.0, 28.0, 8.0 / 3.0, 0.01
         ks = np.zeros(length, dtype=np.uint8)
+        # Burn-in
+        for _ in range(1000):
+            dx = sigma * (y - x) * dt
+            dy = (x * (rho - z) - y) * dt
+            dz = (x * y - beta * z) * dt
+            x += dx;
+            y += dy;
+            z += dz
+
         for i in range(length):
             dx = sigma * (y - x) * dt
             dy = (x * (rho - z) - y) * dt
@@ -75,8 +114,10 @@ class ChaosCryptoCore:
             x += dx;
             y += dy;
             z += dz
+
             if not math.isfinite(x): x, y, z = 0.1, 0.1, 0.1
-            ks[i] = ChaosCryptoCore.safe_byte(abs(x), scale=1000)
+            # ใช้ค่า x ผสม z เพื่อความสุ่ม
+            ks[i] = ChaosCryptoCore.safe_byte(abs(x) + abs(z))
         return ks
 
     @staticmethod
@@ -84,6 +125,15 @@ class ChaosCryptoCore:
         x, y, z = ChaosCryptoCore.get_initials(password, 3)
         a, b, c, dt = 35.0, 3.0, 28.0, 0.005
         ks = np.zeros(length, dtype=np.uint8)
+        # Burn-in
+        for _ in range(1000):
+            dx = a * (y - x) * dt
+            dy = ((c - a) * x - x * z + c * y) * dt
+            dz = (x * y - b * z) * dt
+            x += dx;
+            y += dy;
+            z += dz
+
         for i in range(length):
             dx = a * (y - x) * dt
             dy = ((c - a) * x - x * z + c * y) * dt
@@ -91,8 +141,9 @@ class ChaosCryptoCore:
             x += dx;
             y += dy;
             z += dz
+
             if not math.isfinite(x): x, y, z = 0.1, 0.1, 0.1
-            ks[i] = ChaosCryptoCore.safe_byte(abs(x), scale=1000)
+            ks[i] = ChaosCryptoCore.safe_byte(abs(x) + abs(y))
         return ks
 
     @staticmethod
@@ -110,19 +161,10 @@ class ChaosCryptoCore:
 
     @staticmethod
     def calculate_entropy(data):
-        """
-        [FIXED] แก้ไข ValueError: object too deep โดยการ flatten ข้อมูลก่อน
-        """
         if len(data) == 0: return 0.0
-
-        # 1. แปลงข้อมูลเป็น uint8 (byte) เพื่อให้คำนวณ Entropy ได้ถูกต้อง
         if data.dtype != np.uint8:
             data = data.view(np.uint8)
-
-        # 2. [สำคัญ] Flatten ข้อมูลให้เป็น 1D Array (แก้ปัญหา Stereo/Multi-channel)
         data = data.flatten()
-
-        # 3. คำนวณความถี่
         counts = np.bincount(data, minlength=256)
         probs = counts / len(data)
         probs = probs[probs > 0]
@@ -132,7 +174,7 @@ class ChaosCryptoCore:
 class UltimateCryptoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Audio Crypto Suite v8.1 (Fixed Stereo Bug)")
+        self.title("Audio Crypto Suite v9.0 (Hénon Fixed)")
         self.geometry("1250x900")
 
         self.tabview = ctk.CTkTabview(self)
@@ -240,29 +282,19 @@ class UltimateCryptoApp(ctk.CTk):
             out_path = os.path.splitext(path)[0] + suffix
             sf.write(out_path, final_audio, sr)
 
-            # Stats Calculation
+            # Stats
             duration = time.time() - start_t
             if duration == 0: duration = 0.001
             throughput = original_size_mb / duration
-
-            # คำนวณ Entropy (ฟังก์ชันนี้แก้บั๊กแล้ว)
             entropy = ChaosCryptoCore.calculate_entropy(final_audio)
 
-            # --- Generate Detailed Report ---
+            # --- Report ---
             self.generate_detailed_report(
-                filename=os.path.basename(path),
-                size_mb=original_size_mb,
-                duration_sec=audio_duration,
-                algo=algo,
-                mode=mode,
-                strategy=strategy,
-                time_taken=duration,
-                speed=throughput,
-                entropy=entropy,
-                out_file=os.path.basename(out_path)
+                filename=os.path.basename(path), size_mb=original_size_mb, duration_sec=audio_duration,
+                algo=algo, mode=mode, strategy=strategy, time_taken=duration, speed=throughput,
+                entropy=entropy, out_file=os.path.basename(out_path)
             )
 
-            # Update Graph
             self.after(0, lambda: self.plot_waveforms(data, final_audio, mode))
 
         except Exception as e:
@@ -272,7 +304,6 @@ class UltimateCryptoApp(ctk.CTk):
 
     def generate_detailed_report(self, filename, size_mb, duration_sec, algo, mode, strategy, time_taken, speed,
                                  entropy, out_file):
-        # Determine Security Status based on Entropy
         sec_status = "Unknown"
         if entropy > 7.99:
             sec_status = "✅ High (Random Noise)"
@@ -280,7 +311,6 @@ class UltimateCryptoApp(ctk.CTk):
             sec_status = "⚠️ Moderate"
         else:
             sec_status = "❌ Low (Pattern Detected)"
-
         if mode == "decrypt": sec_status = "N/A (Restored)"
 
         report = f"""
@@ -314,11 +344,8 @@ class UltimateCryptoApp(ctk.CTk):
 
     def plot_waveforms(self, original, processed, mode):
         for widget in self.canvas_area.winfo_children(): widget.destroy()
-
-        # แก้ไขการพล็อตสำหรับไฟล์ Stereo
         y1 = original[:, 0] if original.ndim > 1 else original
         y2 = processed[:, 0] if processed.ndim > 1 else processed
-
         step = max(1, len(y1) // 5000)
         y1 = y1[::step];
         y2 = y2[::step]
