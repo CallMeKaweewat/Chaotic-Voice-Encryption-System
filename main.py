@@ -240,11 +240,13 @@ class UltimateCryptoApp(ctk.CTk):
 
     # --- Core Logic ---
     def browse_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac")])
+        # เพิ่ม *.ogg ในตัวกรองชนิดไฟล์
+        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac *.ogg")])
         if path: self.file_path.set(path); self.lbl_file.configure(text=os.path.basename(path))
 
     def browse_bench_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac")])
+        # เพิ่ม *.ogg ในตัวกรองชนิดไฟล์สำหรับหน้า Benchmark
+        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac *.ogg")])
         if path: self.bench_file_path.set(path); self.lbl_bench_file.configure(text=os.path.basename(path),
                                                                                text_color="white")
 
