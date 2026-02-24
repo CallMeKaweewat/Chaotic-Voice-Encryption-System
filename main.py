@@ -13,6 +13,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from Crypto.Cipher import ChaCha20, AES
 from Crypto.Util import Counter
 from Crypto.Hash import SHA256
+import scipy.stats as stats
 
 # --- Configuration ---
 ctk.set_appearance_mode("Dark")
@@ -20,7 +21,7 @@ ctk.set_default_color_theme("blue")
 
 
 class ChaosCryptoCore:
-    """Core Engine with High-Entropy Quantization"""
+    """Core Engine with High-Entropy Quantization & Analytics"""
 
     @staticmethod
     def get_initials(password, count=3):
@@ -34,37 +35,29 @@ class ChaosCryptoCore:
 
     @staticmethod
     def safe_byte(val):
-        """Deep Decimal Extraction"""
         if not math.isfinite(val): return 0
         try:
             return int((abs(val) * 1000000)) % 256
         except (OverflowError, ValueError):
             return 0
 
+    # --- Algorithms ---
     @staticmethod
     def henon_map(password, length):
         x, y, _ = ChaosCryptoCore.get_initials(password, 3)
         a, b = 1.4, 0.3
         ks = np.zeros(length, dtype=np.uint8)
-
-        # Burn-in
         for _ in range(1000):
             new_x = 1 - (a * (x ** 2)) + y
             y = b * x
             x = new_x
             if abs(x) > 100: x, y = 0.1, 0.1
-
-        # Generation Loop
         for i in range(length):
             new_x = 1 - (a * (x ** 2)) + y
             y = b * x
             x = new_x
-
-            if not math.isfinite(x) or abs(x) > 100.0:
-                x, y = 0.1, 0.1
-
-            combined_val = x + y
-            ks[i] = ChaosCryptoCore.safe_byte(combined_val)
+            if not math.isfinite(x) or abs(x) > 100.0: x, y = 0.1, 0.1
+            ks[i] = ChaosCryptoCore.safe_byte(x + y)
         return ks
 
     @staticmethod
@@ -72,8 +65,7 @@ class ChaosCryptoCore:
         x = ChaosCryptoCore.get_initials(password, 1)[0]
         r = 3.999
         ks = np.zeros(length, dtype=np.uint8)
-        for _ in range(1000):
-            x = r * x * (1 - x)
+        for _ in range(1000): x = r * x * (1 - x)
         for i in range(length):
             x = r * x * (1 - x)
             ks[i] = int(x * 1000000) % 256
@@ -138,23 +130,30 @@ class ChaosCryptoCore:
         cipher = ChaCha20.new(key=key, nonce=key[:12])
         return np.frombuffer(cipher.encrypt(b'\x00' * length), dtype=np.uint8)
 
+    # --- Metrics ---
     @staticmethod
-    def calculate_entropy(data):
-        if len(data) == 0: return 0.0
-        if data.dtype != np.uint8:
-            data = data.view(np.uint8)
-        data = data.flatten()
-        counts = np.bincount(data, minlength=256)
-        probs = counts / len(data)
+    def calculate_metrics(original, encrypted):
+        orig_flat = original.flatten().view(np.uint8)
+        enc_flat = encrypted.flatten().view(np.uint8)
+        sample_size = min(len(orig_flat), 100000)
+
+        # ป้องกัน error กรณีขนาดความยาวไม่เท่ากัน
+        correlation, _ = stats.pearsonr(orig_flat[:sample_size], enc_flat[:sample_size])
+
+        # Entropy
+        counts = np.bincount(enc_flat, minlength=256)
+        probs = counts / len(enc_flat)
         probs = probs[probs > 0]
-        return -np.sum(probs * np.log2(probs))
+        entropy = -np.sum(probs * np.log2(probs))
+
+        return correlation, entropy
 
 
 class UltimateCryptoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Audio Crypto Suite v9.1 (Fixed Layout)")
-        self.geometry("1280x900")
+        self.title("Audio Crypto Suite v10.0 (Robust MSB Edition)")
+        self.geometry("1400x900")
 
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
@@ -166,7 +165,6 @@ class UltimateCryptoApp(ctk.CTk):
         self.setup_benchmark_tab()
 
     def setup_operation_tab(self):
-        # --- Left Panel ---
         ctrl_frame = ctk.CTkFrame(self.tab_op, width=380)
         ctrl_frame.pack(side="left", fill="y", padx=10, pady=10)
 
@@ -186,264 +184,69 @@ class UltimateCryptoApp(ctk.CTk):
         self.entry_pass = ctk.CTkEntry(ctrl_frame, show="*")
         self.entry_pass.pack(fill="x", padx=10, pady=5)
 
-        # --- Button Groups (Fixed for MSB Logic) ---
-        ctk.CTkLabel(ctrl_frame, text="--- Standard Mode (High Security) ---", text_color="#aaaaaa").pack(pady=(20, 5))
-
+        # --- Standard Buttons ---
+        ctk.CTkLabel(ctrl_frame, text="--- Standard Mode (Full) ---", text_color="#aaaaaa").pack(pady=(20, 5))
         btn_grid_std = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
         btn_grid_std.pack(fill="x", padx=5)
-
-        ctk.CTkButton(btn_grid_std, text="🔒 Full Encrypt", fg_color="#c0392b", hover_color="#922b21",
+        ctk.CTkButton(btn_grid_std, text="🔒 Full Enc", fg_color="#c0392b",
                       command=lambda: self.run_process("encrypt", "full")).pack(side="left", expand=True, padx=2)
-        ctk.CTkButton(btn_grid_std, text="🔓 Full Decrypt", fg_color="#27ae60", hover_color="#1e8449",
+        ctk.CTkButton(btn_grid_std, text="🔓 Full Dec", fg_color="#27ae60",
                       command=lambda: self.run_process("decrypt", "full")).pack(side="right", expand=True, padx=2)
 
-        ctk.CTkLabel(ctrl_frame, text="--- Fast Mode (Selective MSB) ---", text_color="#aaaaaa").pack(pady=(15, 5))
-
-        btn_grid_fast = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
-        btn_grid_fast.pack(fill="x", padx=5)
-
-        ctk.CTkButton(btn_grid_fast, text="⚡ MSB Encrypt", fg_color="#d35400", hover_color="#a04000",
+        # --- MSB Buttons ---
+        ctk.CTkLabel(ctrl_frame, text="--- Fast Mode (MSB Only) ---", text_color="#aaaaaa").pack(pady=(15, 5))
+        btn_grid_msb = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
+        btn_grid_msb.pack(fill="x", padx=5)
+        ctk.CTkButton(btn_grid_msb, text="⚡ MSB Enc", fg_color="#d35400",
                       command=lambda: self.run_process("encrypt", "selective")).pack(side="left", expand=True, padx=2)
-        ctk.CTkButton(btn_grid_fast, text="🔋 MSB Decrypt", fg_color="#2980b9", hover_color="#1a5276",
+        ctk.CTkButton(btn_grid_msb, text="🔋 MSB Dec", fg_color="#2980b9",
                       command=lambda: self.run_process("decrypt", "selective")).pack(side="right", expand=True, padx=2)
 
-        # --- Log ---
-        ctk.CTkLabel(ctrl_frame, text="Status Log:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10,
-                                                                                           pady=(20, 5))
         self.op_log = ctk.CTkTextbox(ctrl_frame, font=("Consolas", 12))
         self.op_log.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # --- Right Panel ---
         self.viz_frame = ctk.CTkFrame(self.tab_op)
         self.viz_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
-
-        ctk.CTkLabel(self.viz_frame, text="SIGNAL COMPARISON (Waveform)",
-                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
         self.canvas_area = ctk.CTkFrame(self.viz_frame)
         self.canvas_area.pack(fill="both", expand=True, padx=5, pady=5)
 
-    def browse_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac")])
-        if path:
-            self.file_path.set(path)
-            self.lbl_file.configure(text=os.path.basename(path))
-
-    def run_process(self, mode, strategy):
-        threading.Thread(target=self.process_thread, args=(mode, strategy), daemon=True).start()
-
-    def process_thread(self, mode, strategy):
-        path = self.file_path.get()
-        pwd = self.entry_pass.get()
-        algo = self.algo_var.get()
-
-        if not path or not pwd:
-            self.log_to_box("❌ Error: File and Password required!")
-            return
-
-        try:
-            start_t = time.time()
-            self.log_to_box(f"⏳ Starting {mode.upper()} ({strategy})...")
-
-            # Read File
-            data, sr = sf.read(path, dtype='int16')
-            # Work on a copy to avoid locking issues
-            processed_data = data.copy()
-            original_size_mb = os.path.getsize(path) / (1024 * 1024)
-            audio_duration = len(data) / sr
-
-            # Get flat view for processing
-            flat_view = processed_data.reshape(-1)
-
-            # --- Processing Logic ---
-            if strategy == "full":
-                # Treat entire data as byte stream
-                # view(np.uint8) allows direct byte manipulation without reshaping mess
-                byte_view = flat_view.view(np.uint8)
-                ks = self.get_keystream(algo, pwd, len(byte_view))
-
-                # XOR in place
-                byte_view[:] = np.bitwise_xor(byte_view, ks)
-
-            elif strategy == "selective":
-                # View as bytes: [Low, High, Low, High, ...] (Little Endian)
-                byte_view = flat_view.view(np.uint8)
-
-                # High bytes (MSB) are at odd indices: 1, 3, 5...
-                msb_view = byte_view[1::2]
-
-                ks = self.get_keystream(algo, pwd, len(msb_view))
-
-                # XOR only MSB in place
-                # This works for BOTH encrypt and decrypt because XOR is symmetric
-                msb_view[:] = np.bitwise_xor(msb_view, ks)
-
-            # --- Saving ---
-            tag = algo.split()[0]
-            if mode == "encrypt":
-                suffix = f"_{tag}_{strategy}_ENC.wav"
-            else:
-                suffix = f"_{tag}_{strategy}_DEC.wav"
-
-            out_path = os.path.splitext(path)[0] + suffix
-            sf.write(out_path, processed_data, sr)
-
-            # Stats
-            duration = time.time() - start_t
-            if duration == 0: duration = 0.001
-            throughput = original_size_mb / duration
-            entropy = ChaosCryptoCore.calculate_entropy(processed_data)
-
-            self.generate_detailed_report(
-                filename=os.path.basename(path), size_mb=original_size_mb, duration_sec=audio_duration,
-                algo=algo, mode=mode, strategy=strategy, time_taken=duration, speed=throughput,
-                entropy=entropy, out_file=os.path.basename(out_path)
-            )
-
-            self.after(0, lambda: self.plot_waveforms(data, processed_data, mode))
-
-        except Exception as e:
-            self.log_to_box(f"❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def generate_detailed_report(self, filename, size_mb, duration_sec, algo, mode, strategy, time_taken, speed,
-                                 entropy, out_file):
-        sec_status = "Unknown"
-        # Logic for status
-        if mode == "encrypt":
-            if entropy > 7.9:
-                sec_status = "✅ High (Random Noise)"
-            elif entropy > 7.0:
-                sec_status = "⚠️ Moderate"
-            else:
-                sec_status = "❌ Low (Pattern Detected)"
-        else:
-            sec_status = "ℹ️ Restored Data"
-
-        report = f"""
-{'=' * 40}
-[{mode.upper()} SUCCESS]
-{'=' * 40}
-📂 File:      {filename}
-⚙️ Mode:      {strategy.upper()} - {algo}
-🚀 Speed:     {speed:.2f} MB/s ({time_taken:.4f}s)
-🔒 Entropy:   {entropy:.5f}
-📝 Status:    {sec_status}
-💾 Saved:     {out_file}
-{'=' * 40}
-"""
-        self.log_to_box(report)
-
-    def log_to_box(self, text):
-        self.op_log.insert("end", text + "\n")
-        self.op_log.see("end")
-
-    def plot_waveforms(self, original, processed, mode):
-        for widget in self.canvas_area.winfo_children(): widget.destroy()
-
-        # Downsample for performance plotting
-        y1 = original.flatten()
-        y2 = processed.flatten()
-        step = max(1, len(y1) // 5000)
-        y1 = y1[::step]
-        y2 = y2[::step]
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 4), sharex=True)
-        fig.patch.set_facecolor('#2b2b2b')
-
-        ax1.plot(y1, color='#2ecc71', lw=0.8)
-        ax1.set_title("Input Signal", color='white', fontsize=10)
-        ax1.set_facecolor('#212121');
-        ax1.tick_params(colors='white')
-
-        color = '#e74c3c' if mode == 'encrypt' else '#3498db'
-        title = "Output Signal"
-        ax2.plot(y2, color=color, lw=0.8)
-        ax2.set_title(title, color='white', fontsize=10)
-        ax2.set_facecolor('#212121');
-        ax2.tick_params(colors='white')
-
-        plt.tight_layout()
-        canvas = FigureCanvasTkAgg(fig, master=self.canvas_area)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-
     def setup_benchmark_tab(self):
-        left = ctk.CTkFrame(self.tab_bench, width=280)
+        left = ctk.CTkFrame(self.tab_bench, width=320)
         left.pack(side="left", fill="y", padx=10, pady=10)
-        ctk.CTkLabel(left, text="BENCHMARK LAB", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
-        self.bench_size = ctk.StringVar(value="1.0")
-        ctk.CTkLabel(left, text="Data Size (MB):").pack(pady=5)
-        ctk.CTkEntry(left, textvariable=self.bench_size).pack(pady=5)
-        ctk.CTkButton(left, text="🚀 RUN BENCHMARK", fg_color="#d35400", command=self.run_benchmark).pack(pady=20,
-                                                                                                         fill="x",
-                                                                                                         padx=10)
+
+        ctk.CTkLabel(left, text="🔬 BENCHMARK LAB", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
+
+        self.bench_file_path = tk.StringVar()
+        ctk.CTkButton(left, text="📂 Select File for Testing", fg_color="#34495e", command=self.browse_bench_file).pack(
+            pady=5, padx=10, fill="x")
+        self.lbl_bench_file = ctk.CTkLabel(left, text="No file selected (using dummy)", text_color="gray")
+        self.lbl_bench_file.pack(pady=5)
+
+        # --- สร้างปุ่มแยกโหมด ---
+        btn_frame = ctk.CTkFrame(left, fg_color="transparent")
+        btn_frame.pack(pady=15, fill="x", padx=10)
+
+        ctk.CTkButton(btn_frame, text="🔒 RUN FULL BENCHMARK", fg_color="#c0392b",
+                      command=lambda: self.run_benchmark("full")).pack(side="top", fill="x", pady=5)
+
+        ctk.CTkButton(btn_frame, text="⚡ RUN MSB BENCHMARK", fg_color="#d35400",
+                      command=lambda: self.run_benchmark("msb")).pack(side="top", fill="x", pady=5)
+
         self.bench_log = ctk.CTkTextbox(left, font=("Consolas", 11))
         self.bench_log.pack(pady=10, padx=5, fill="both", expand=True)
-        self.right_panel = ctk.CTkFrame(self.tab_bench)
-        self.right_panel.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
-    def run_benchmark(self):
-        threading.Thread(target=self.process_benchmark, daemon=True).start()
+        self.bench_viz = ctk.CTkFrame(self.tab_bench)
+        self.bench_viz.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
-    def process_benchmark(self):
-        try:
-            mb = float(self.bench_size.get())
-            size_bytes = int(mb * 1024 * 1024)
-            pwd = "BENCH_KEY"
-            self.bench_log.delete("1.0", "end")
-            self.bench_log.insert("end", f"Benchmarking {mb} MB...\n")
+    # --- Core Logic ---
+    def browse_file(self):
+        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac")])
+        if path: self.file_path.set(path); self.lbl_file.configure(text=os.path.basename(path))
 
-            dummy = np.random.randint(0, 256, size_bytes, dtype=np.uint8)
-            algos = {
-                "Logistic": ChaosCryptoCore.logistic_map,
-                "Hénon": ChaosCryptoCore.henon_map,
-                "Lorenz": ChaosCryptoCore.lorenz_system,
-                "Chen": ChaosCryptoCore.chen_system,
-                "ChaCha20": ChaosCryptoCore.chacha20,
-                "AES-CTR": ChaosCryptoCore.aes_ctr
-            }
-            results = []
-            for name, func in algos.items():
-                self.bench_log.insert("end", f"> {name}...\n")
-                start = time.time()
-                ks = func(pwd, size_bytes)
-                if isinstance(ks, bytes): ks = np.frombuffer(ks, dtype=np.uint8)
-                enc = np.bitwise_xor(dummy, ks)
-                dur = time.time() - start
-                if dur == 0: dur = 0.001
-                results.append({"Algo": name, "Speed": mb / dur, "Entropy": ChaosCryptoCore.calculate_entropy(enc)})
-
-            df = pd.DataFrame(results)
-            self.bench_log.insert("end", "\nDONE.\n")
-            self.after(0, lambda: self.plot_graphs(df))
-
-        except Exception as e:
-            self.bench_log.insert("end", f"\nError: {e}")
-
-    def plot_graphs(self, df):
-        for widget in self.right_panel.winfo_children(): widget.destroy()
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 8))
-        fig.patch.set_facecolor('#2b2b2b')
-
-        # Plot Speed
-        ax1.barh(df['Algo'], df['Speed'], color='#3498db')
-        ax1.set_title('Encryption Speed (MB/s)', color='white')
-        ax1.set_facecolor('#2b2b2b');
-        ax1.tick_params(colors='white')
-
-        # Plot Entropy
-        ax2.barh(df['Algo'], df['Entropy'], color='#e74c3c')
-        ax2.set_xlim(7.98, 8.005)  # Zoom in to see small differences
-        ax2.axvline(8.0, color='lime', linestyle='--', alpha=0.5)
-        ax2.set_title('Entropy (Max=8.0)', color='white')
-        ax2.set_facecolor('#2b2b2b');
-        ax2.tick_params(colors='white')
-
-        plt.tight_layout()
-        canvas = FigureCanvasTkAgg(fig, master=self.right_panel)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+    def browse_bench_file(self):
+        path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.flac")])
+        if path: self.bench_file_path.set(path); self.lbl_bench_file.configure(text=os.path.basename(path),
+                                                                               text_color="white")
 
     def get_keystream(self, name, pwd, length):
         if "Hénon" in name: return ChaosCryptoCore.henon_map(pwd, length)
@@ -453,6 +256,186 @@ class UltimateCryptoApp(ctk.CTk):
         if "ChaCha20" in name: return ChaosCryptoCore.chacha20(pwd, length)
         if "AES" in name: return ChaosCryptoCore.aes_ctr(pwd, length)
         return np.zeros(length, dtype=np.uint8)
+
+    def run_process(self, mode, strategy):
+        threading.Thread(target=self.process_thread, args=(mode, strategy), daemon=True).start()
+
+    def process_thread(self, mode, strategy):
+        path, pwd, algo = self.file_path.get(), self.entry_pass.get(), self.algo_var.get()
+        if not path or not pwd: return
+        try:
+            filename = os.path.basename(path)
+
+            # Header Log
+            msg_start = f"\n--- Starting {mode.upper()} ({strategy.upper()}) ---\n🎯 Target: {filename}\n⚙️ Algo:   {algo}\n"
+            self.after(0, lambda m=msg_start: self.op_log.insert("end", m))
+
+            # 1. จับเวลา File I/O (Read)
+            io_start = time.time()
+            data, sr = sf.read(path, dtype='int16')
+            io_read_time = time.time() - io_start
+
+            processed_data = data.copy()
+            flat_data = processed_data.reshape(-1)  # 1D int16 array
+
+            # คำนวณขนาดไฟล์ (MB) (int16 มีขนาด 2 bytes ต่อค่า)
+            size_mb = (len(flat_data) * 2) / (1024 * 1024)
+            msg_read = f"📊 Size:   {size_mb:.4f} MB\n📂 Read:   {io_read_time:.4f} s\n"
+            self.after(0, lambda m=msg_read: self.op_log.insert("end", m))
+
+            # 2. จับเวลา Encryption / Calculation
+            enc_start = time.time()
+
+            if strategy == "full":
+                byte_view = flat_data.view(np.uint8)
+                ks = self.get_keystream(algo, pwd, len(byte_view))
+                byte_view[:] = np.bitwise_xor(byte_view, ks[:len(byte_view)])
+            else:
+                # MSB Mode: ใช้ Bitwise Shift ดันรหัสขึ้นไปประมวลผลเฉพาะ 8 บิตบน (เสถียรสุด 100%)
+                ks = self.get_keystream(algo, pwd, len(flat_data))
+                mask = ks.astype(np.int16) << 8
+                flat_data[:] = np.bitwise_xor(flat_data, mask)
+
+            enc_time = time.time() - enc_start
+
+            # ความเร็วช่วงประมวลผลสมการล้วนๆ
+            enc_speed = size_mb / enc_time if enc_time > 0 else 0
+            msg_enc = f"🔐 Calc:   {enc_time:.4f} s ({enc_speed:.2f} MB/s)\n"
+            self.after(0, lambda m=msg_enc: self.op_log.insert("end", m))
+
+            # 3. จับเวลา File I/O (Write)
+            write_start = time.time()
+            out_path = os.path.splitext(path)[0] + f"_{strategy}_{mode}.wav"
+            sf.write(out_path, processed_data, sr)
+            write_time = time.time() - write_start
+
+            # สรุปเวลารวม และความเร็วจริง (Total Real Speed)
+            total_time = io_read_time + enc_time + write_time
+            total_speed = size_mb / total_time if total_time > 0 else 0
+
+            msg_write = f"💾 Write:  {write_time:.4f} s\n"
+            msg_done = f"⚡ Total Real Speed: {total_speed:.2f} MB/s\n✅ Done in {total_time:.4f} s\n\n"
+
+            self.after(0, lambda m=msg_write: self.op_log.insert("end", m))
+            self.after(0, lambda m=msg_done: self.op_log.insert("end", m))
+
+            self.after(0, lambda: self.plot_waveforms(data, processed_data, mode))
+        except Exception as e:
+            self.after(0, lambda err=e: self.op_log.insert("end", f"❌ Error: {err}\n"))
+
+    def run_benchmark(self, mode):
+        threading.Thread(target=self.process_benchmark, args=(mode,), daemon=True).start()
+
+    def process_benchmark(self, mode):
+        try:
+            path = self.bench_file_path.get()
+
+            # --- 1. จับเวลาโหลดไฟล์เข้า Memory (I/O & Decoding) ---
+            io_start = time.time()
+            if path and os.path.exists(path):
+                data_raw, _ = sf.read(path, dtype='int16')
+                test_data = data_raw.flatten()  # ใช้โครงสร้าง int16 เต็มรูปแบบ
+                data_source = "Audio File"
+            else:
+                test_data = np.random.randint(-32768, 32767, 1024 * 512, dtype=np.int16)
+                data_source = "Dummy Data"
+            io_time = time.time() - io_start
+
+            size_mb = (len(test_data) * 2) / (1024 * 1024)
+            mode_name = "FULL MODE" if mode == "full" else "MSB MODE"
+
+            self.after(0, lambda: self.bench_log.delete("1.0", "end"))
+            self.after(0, lambda: self.bench_log.insert("end", f"🚀 Analyzing {size_mb:.4f} MB [{mode_name}]\n"))
+            self.after(0, lambda: self.bench_log.insert("end", f"📂 I/O Load Time ({data_source}): {io_time:.4f} s\n"))
+            self.after(0, lambda: self.bench_log.insert("end", "-" * 55 + "\n"))
+
+            algos = ["Logistic", "Hénon", "Lorenz", "Chen", "ChaCha20", "AES-CTR"]
+            results = []
+
+            total_start_time = time.time()
+
+            for name in algos:
+                self.after(0, lambda n=name: self.bench_log.insert("end", f"Testing [{n}]...\n"))
+
+                # --- 2. จับเวลาคำนวณ Chaos และเข้ารหัส (Encryption Time) ---
+                enc_start = time.time()
+                enc_data = test_data.copy()
+
+                if mode == "full":
+                    byte_view = enc_data.view(np.uint8)
+                    ks = self.get_keystream(name, "KEY", len(byte_view))
+                    byte_view[:] = np.bitwise_xor(byte_view, ks[:len(byte_view)])
+                else:  # MSB mode
+                    ks = self.get_keystream(name, "KEY", len(enc_data))
+                    mask = ks.astype(np.int16) << 8
+                    enc_data[:] = np.bitwise_xor(enc_data, mask)
+
+                enc_time = time.time() - enc_start
+
+                speed = size_mb / enc_time if enc_time > 0 else 0
+                corr, ent = ChaosCryptoCore.calculate_metrics(test_data, enc_data)
+
+                log_text = f"  ▶ Enc Time: {enc_time:.4f} s | Speed: {speed:8.2f} MB/s | Ent: {ent:.4f} | Corr: {abs(corr):.4f}\n\n"
+                self.after(0, lambda text=log_text: self.bench_log.insert("end", text))
+
+                results.append({"Algo": name, "Speed": speed, "Entropy": ent, "Correlation": abs(corr)})
+
+            total_duration = time.time() - total_start_time
+
+            df = pd.DataFrame(results)
+            self.after(0, lambda duration=total_duration: self.bench_log.insert("end",
+                                                                                f"✅ Benchmark Complete in {duration:.2f} seconds!\n"))
+            self.after(0, lambda m=mode: self.plot_bench_graphs(df, m))
+
+        except Exception as e:
+            self.after(0, lambda err=e: self.bench_log.insert("end", f"❌ Error: {err}\n"))
+
+    def plot_bench_graphs(self, df, mode):
+        for widget in self.bench_viz.winfo_children(): widget.destroy()
+        fig = plt.figure(figsize=(9, 11), facecolor='#2b2b2b')
+
+        color_speed = '#3498db' if mode == 'full' else '#2ecc71'
+        title_suffix = "(FULL)" if mode == 'full' else "(MSB)"
+
+        ax1 = fig.add_subplot(311, facecolor='#2b2b2b')
+        ax1.bar(df['Algo'], df['Speed'], color=color_speed)
+        ax1.set_title(f'Encryption Speed (MB/s) {title_suffix}', color='white')
+        ax1.tick_params(colors='white')
+
+        ax2 = fig.add_subplot(312, facecolor='#2b2b2b')
+        ax2.plot(df['Algo'], df['Entropy'], marker='o', color='#e74c3c')
+        ax2.set_title(f'Overall File Entropy {title_suffix}', color='white')
+
+        min_ent = min(df['Entropy'])
+        max_ent = max(df['Entropy'])
+        padding = 0.1 if max_ent - min_ent > 0 else 0.5
+        ax2.set_ylim(min_ent - padding, max_ent + padding)
+
+        ax2.tick_params(colors='white')
+
+        ax3 = fig.add_subplot(313, facecolor='#2b2b2b')
+        ax3.bar(df['Algo'], df['Correlation'], color='#9b59b6')
+        ax3.set_title(f'Pearson Correlation {title_suffix}', color='white')
+        ax3.tick_params(colors='white')
+
+        plt.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.bench_viz)
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        canvas.draw()
+
+    def plot_waveforms(self, original, processed, mode):
+        for widget in self.canvas_area.winfo_children(): widget.destroy()
+        y1, y2 = original.flatten(), processed.flatten()
+        step = max(1, len(y1) // 5000)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 4), facecolor='#2b2b2b')
+        ax1.plot(y1[::step], color='#2ecc71', lw=0.7)
+        ax1.set_facecolor('#1a1a1a')
+        ax1.set_title("Original", color="white")
+        ax2.plot(y2[::step], color='#e74c3c' if mode == 'encrypt' else '#3498db', lw=0.7)
+        ax2.set_facecolor('#1a1a1a')
+        ax2.set_title("Processed", color="white")
+        plt.tight_layout()
+        FigureCanvasTkAgg(fig, master=self.canvas_area).get_tk_widget().pack(fill="both", expand=True)
 
 
 if __name__ == "__main__":
